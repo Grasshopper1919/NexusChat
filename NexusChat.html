@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NEXUS // Global Grid</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/@supabase/supabase-js@2"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;600;800&family=JetBrains+Mono&display=swap');
+        body { font-family: 'Plus+Jakarta+Sans', sans-serif; background: #020617; color: #f8fafc; margin: 0; }
+        .glass { background: rgba(15, 23, 42, 0.8); backdrop-filter: blur(20px); border: 1px solid rgba(255, 255, 255, 0.1); }
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 10px; }
+        .msg-anim { animation: slideUp 0.3s ease-out; }
+        @keyframes slideUp { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+        /* Ensure input is always clickable */
+        #message-input { pointer-events: auto !important; position: relative; z-index: 50; }
+    </style>
+</head>
+<body class="h-screen flex flex-col overflow-hidden">
+
+    <div id="auth-screen" class="fixed inset-0 z-[100] flex items-center justify-center bg-slate-950">
+        <div class="glass p-10 rounded-[2rem] shadow-2xl w-full max-w-sm text-center border-t-2 border-blue-500">
+            <h1 class="text-5xl font-black italic mb-2 tracking-tighter">NEXUS</h1>
+            <p class="text-blue-500 text-[10px] font-bold uppercase tracking-[0.3em] mb-8">Node Synchronization</p>
+            <input type="text" id="alias-input" placeholder="Enter Alias..." class="w-full bg-slate-900 border border-slate-800 p-4 rounded-2xl mb-4 focus:ring-2 focus:ring-blue-500 outline-none text-white">
+            <button onclick="joinGrid()" class="w-full bg-blue-600 hover:bg-blue-500 py-4 rounded-2xl font-bold transition-all">Connect</button>
+        </div>
+    </div>
+
+    <div class="flex h-full w-full">
+        <aside class="w-20 lg:w-72 bg-slate-950 border-r border-slate-900 flex flex-col z-40">
+            <div class="p-8 font-black text-xl tracking-tighter text-blue-500">GRID.NODES</div>
+            <nav class="flex-1 px-4 space-y-1 overflow-y-auto custom-scrollbar" id="chan-list"></nav>
+            <div class="p-6 bg-slate-900/30">
+                <div class="flex items-center gap-3">
+                    <div id="user-avatar" class="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center font-bold font-mono">?</div>
+                    <span id="user-display" class="hidden lg:block font-bold text-xs truncate uppercase tracking-widest text-slate-400">Guest</span>
+                </div>
+            </div>
+        </aside>
+
+        <main class="flex-1 flex flex-col relative bg-slate-950">
+            <header class="h-16 flex items-center justify-between px-8 border-b border-slate-900 z-30 bg-slate-950/50">
+                <div class="flex items-center gap-2">
+                    <span id="active-chan-name" class="text-sm font-black tracking-widest text-blue-500 uppercase">CHAT_01</span>
+                </div>
+            </header>
+
+            <div id="feed" class="flex-1 overflow-y-auto p-8 space-y-4 custom-scrollbar"></div>
+
+            <footer class="p-6 bg-gradient-to-t from-slate-950 via-slate-950 to-transparent z-50">
+                <div class="max-w-4xl mx-auto glass rounded-2xl p-2 flex items-center gap-2 shadow-2xl border border-slate-800">
+                    <input type="text" id="message-input" autocomplete="off" placeholder="Type here..." 
+                        class="flex-1 bg-transparent p-4 outline-none text-slate-100 placeholder:text-slate-700 text-sm">
+                    <button onclick="broadcast()" class="bg-blue-600 hover:bg-blue-500 p-4 rounded-xl transition-all">
+                        <i data-lucide="send" class="w-5 h-5"></i>
+                    </button>
+                </div>
+            </footer>
+        </main>
+    </div>
+
+    <script>
+        // --- CREDENTIALS ---
+        const SB_URL = 'https://gdhfuwhxusmuplxwtibj.supabase.co';
+        const SB_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImdkaGZ1d2h4dXNtdXBseHd0aWJqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAzMjY3MDQsImV4cCI6MjA4NTkwMjcwNH0.XgJdNmZGMMbnnNYpAMuGawCFx9at4onz71E3PNe0AQc';
+        const sb = supabase.createClient(SB_URL, SB_KEY);
+
+        let user = localStorage.getItem('nexus_user') || "";
+        let currentChan = "Chat 1";
+        const channels = Array.from({length: 10}, (_, i) => `Chat ${i + 1}`);
+
+        async function init() {
+            lucide.createIcons();
+            if (user) {
+                document.getElementById('auth-screen').style.display = 'none';
+                document.getElementById('user-display').innerText = user;
+                document.getElementById('user-avatar').innerText = user[0].toUpperCase();
+                // Focus the input box immediately
+                document.getElementById('message-input').focus();
+            }
+            renderChannels();
+            loadMessages();
+            subscribeRealtime();
+        }
+
+        function joinGrid() {
+            const val = document.getElementById('alias-input').value.trim();
+            if (val) {
+                user = val;
+                localStorage.setItem('nexus_user', val);
+                document.getElementById('auth-screen').style.display = 'none';
+                init();
+            }
+        }
+
+        async function loadMessages() {
+            const { data, error } = await sb
+                .from('messages')
+                .select('*')
+                .eq('channel', currentChan)
+                .order('created_at', { ascending: true });
+            if (!error) renderFeed(data);
+        }
+
+        async function broadcast() {
+            const input = document.getElementById('message-input');
+            const text = input.value.trim();
+            if (!text) return;
+
+            input.value = ""; // Clear immediately for better feel
+            const { error } = await sb.from('messages').insert([{
+                sender: user,
+                text: text,
+                channel: currentChan
+            }]);
+            
+            if (error) console.error(error);
+        }
+
+        function subscribeRealtime() {
+            sb.channel('db-changes').on('postgres_changes', { event: '*', schema: 'public', table: 'messages' }, () => {
+                loadMessages();
+            }).subscribe();
+        }
+
+        function renderChannels() {
+            const nav = document.getElementById('chan-list');
+            nav.innerHTML = channels.map(c => `
+                <button onclick="setChannel('${c}')" class="w-full flex items-center gap-3 p-3 rounded-xl transition-all ${currentChan === c ? 'bg-blue-600/20 text-blue-400 border border-blue-500/20' : 'text-slate-600 hover:text-slate-300'}">
+                    <span class="font-bold text-[10px] tracking-widest uppercase">${c}</span>
+                </button>
+            `).join('');
+        }
+
+        function setChannel(c) {
+            currentChan = c;
+            document.getElementById('active-chan-name').innerText = c.toUpperCase();
+            renderChannels();
+            loadMessages();
+        }
+
+        function renderFeed(msgs) {
+            const feed = document.getElementById('feed');
+            feed.innerHTML = msgs.map(m => `
+                <div class="msg-anim flex flex-col ${m.sender === user ? 'items-end' : 'items-start'}">
+                    <span class="text-[10px] font-bold text-slate-600 uppercase mb-1">${m.sender}</span>
+                    <div class="px-4 py-2 rounded-2xl text-sm ${m.sender === user ? 'bg-blue-600 text-white rounded-tr-none' : 'bg-slate-900 border border-slate-800 text-slate-300 rounded-tl-none'}">
+                        ${m.text}
+                    </div>
+                </div>
+            `).join('');
+            feed.scrollTop = feed.scrollHeight;
+        }
+
+        document.getElementById('message-input').onkeydown = (e) => {
+            if (e.key === 'Enter') broadcast();
+        };
+
+        init();
+    </script>
+</body>
+</html>
